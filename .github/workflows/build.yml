@@ -1,126 +1,171 @@
-name: CI
+name: Build Native Libraries
 
-# Controls when the workflow will run
 on:
-  create:
-
-  # Triggers the workflow on push or pull request events but only for the master branch
   push:
-    branches: [ master ]
-
+    branches: [ master, main ]
+    tags:
+      - 'v*'
   pull_request:
-    branches: [ master ]
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [ master, main ]
   workflow_dispatch:
     inputs:
-      ReleaseType:
-        description: 'Release or Debug'
-        required: true
-        default: 'Release'
+      imgui_version:
+        description: 'Dear ImGui version to build (e.g., v1.92.5)'
+        required: false
+        type: string
+
+env:
+  BUILD_TYPE: Release
 
 jobs:
-  Build:
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     strategy:
       matrix:
+        arch: [x86, x64, ARM64]
         include:
-          - os: macos-latest
-          - os: ubuntu-latest
-          - os: windows-latest
-            architecture: x64
-          - os: windows-latest
-            architecture: x86
-          - os: windows-latest
-            architecture: ARM64
-
+          - arch: x86
+            cmake_arch: Win32
+          - arch: x64
+            cmake_arch: x64
+          - arch: ARM64
+            cmake_arch: ARM64
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           submodules: recursive
 
-      - name: Setup .NET
-        if: matrix.os == 'windows-latest'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-
-      - name: Build source package
-        if: matrix.os == 'windows-latest' && matrix.architecture == 'x64'
-        run: dotnet pack -c Release ImGui.NET.SourceBuild.csproj
-        shell: bash
-
-      - name: Upload source package
-        uses: actions/upload-artifact@v4
-        if: matrix.os == 'windows-latest' && matrix.architecture == 'x64'
-        with:
-          name: win-x64-source
-          path: bin\Packages\Release\*.nupkg
-
-      - name: Publish untagged source package to MyGet
-        if: matrix.os == 'windows-latest' && github.ref == 'refs/heads/master' && matrix.architecture == 'x64'
-        run: dotnet nuget push bin\Packages\Release\*.nupkg -s https://www.myget.org/F/mellinoe/api/v3/index.json --api-key ${{secrets.MYGET_KEY}}
-        # error can be fixed afterwards and job can be re-triggered
-        continue-on-error: true
-
-      - name: Publish tagged source package release to nuget.org
-        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/') && matrix.architecture == 'x64'
-        run: dotnet nuget push bin\Packages\Release\*.nupkg -s https://api.nuget.org/v3/index.json --api-key ${{secrets.NUGET_KEY}}
-        # error can be fixed afterwards and job can be re-triggered
-        continue-on-error: true
-
-      - name: Build ${{ github.event.inputs.ReleaseType || 'Release' }}
-        run:  |
-              if [ "$RUNNER_OS" == "Windows" ]; then
-                ./ci-build.cmd ${{ github.event.inputs.ReleaseType || 'Release' }} ${{ matrix.architecture }}
-              else
-                ./ci-build.sh ${{ github.event.inputs.ReleaseType || 'Release' }}
-              fi
-        shell: bash
-
-      - name: Upload win-${{ matrix.architecture }} ${{ github.event.inputs.ReleaseType || 'Release' }}
-        uses: actions/upload-artifact@v4
-        if: matrix.os == 'windows-latest'
-        with:
-          name: win-${{ matrix.architecture }}
-          path: cimgui\build\${{ matrix.architecture }}\${{ github.event.inputs.ReleaseType || 'Release' }}\*
-
-      - name: Upload ${{ matrix.os }} ${{ github.event.inputs.ReleaseType || 'Release' }}
-        uses: actions/upload-artifact@v4
-        if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-latest'
-        with:
-          name: ${{ matrix.os }}-x64
-          path: cimgui/build/${{ github.event.inputs.ReleaseType || 'Release' }}/*
-
-      - name: Upload Json Files
-        uses: actions/upload-artifact@v4
-        if: matrix.os == 'windows-latest' && matrix.architecture == 'x64'
-        with:
-          name: JsonFiles
-          path: cimgui\generator\output\*.json
-
-  CreateReleaseOnTagCreate:
-    runs-on: ubuntu-latest
-    needs: [Build]
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Rename win-x64 and win-x86 artifacts
+      - name: Configure CMake
         run: |
-          mv win-x64/cimgui.dll win-x64/cimgui.win-x64.dll
-          mv win-x86/cimgui.dll win-x86/cimgui.win-x86.dll
-          mv win-ARM64/cimgui.dll win-ARM64/cimgui.win-arm64.dll
+          cd cimgui
+          mkdir -p build/${{ matrix.arch }}
+          cd build/${{ matrix.arch }}
+          cmake ../.. -A ${{ matrix.cmake_arch }} -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
-      - name: Release
+      - name: Build
+        run: |
+          cd cimgui/build/${{ matrix.arch }}
+          cmake --build . --config ${{ env.BUILD_TYPE }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cimgui-win-${{ matrix.arch }}
+          path: cimgui/build/${{ matrix.arch }}/${{ env.BUILD_TYPE }}/cimgui.dll
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+
+      - name: Configure CMake
+        run: |
+          cd cimgui
+          mkdir -p build/Release
+          cd build/Release
+          cmake ../.. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: |
+          cd cimgui/build/Release
+          make
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cimgui-linux-x64
+          path: cimgui/build/Release/cimgui.so
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure CMake (Universal Binary)
+        run: |
+          cd cimgui
+          mkdir -p build/Release
+          cd build/Release
+          cmake ../.. -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: |
+          cd cimgui/build/Release
+          make
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cimgui-osx
+          path: cimgui/build/Release/cimgui.dylib
+
+  generate-definitions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit
+
+      - name: Generate definitions
+        run: |
+          cd cimgui/generator
+          luajit ./generator.lua gcc "internal noimstrv"
+
+      - name: Upload definitions
+        uses: actions/upload-artifact@v4
+        with:
+          name: definitions
+          path: |
+            cimgui/generator/output/definitions.json
+            cimgui/generator/output/structs_and_enums.json
+
+  create-release:
+    needs: [build-windows, build-linux, build-macos, generate-definitions]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir release
+          cp artifacts/cimgui-win-x86/cimgui.dll release/cimgui.win-x86.dll
+          cp artifacts/cimgui-win-x64/cimgui.dll release/cimgui.win-x64.dll
+          cp artifacts/cimgui-win-ARM64/cimgui.dll release/cimgui.win-arm64.dll
+          cp artifacts/cimgui-linux-x64/cimgui.so release/cimgui.so
+          cp artifacts/cimgui-osx/cimgui.dylib release/cimgui.dylib
+          cp artifacts/definitions/cimgui/generator/output/definitions.json release/
+          cp artifacts/definitions/cimgui/generator/output/structs_and_enums.json release/
+          ls -la release/
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            win-x64/cimgui.win-x64.dll
-            win-x86/cimgui.win-x86.dll
-            win-ARM64/cimgui.win-arm64.dll
-            JsonFiles/*
-            ubuntu-latest-x64/cimgui.so
-            macos-latest-x64/cimgui.dylib
+          files: release/*
+          generate_release_notes: true
+          draft: false
