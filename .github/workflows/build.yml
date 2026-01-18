@@ -131,13 +131,18 @@ jobs:
           cd cimgui/generator
           luajit ./generator.lua gcc "internal noimstrv"
 
+      - name: Copy definitions to root
+        run: |
+          cp cimgui/generator/output/definitions.json .
+          cp cimgui/generator/output/structs_and_enums.json .
+
       - name: Upload definitions
         uses: actions/upload-artifact@v4
         with:
           name: definitions
           path: |
-            cimgui/generator/output/definitions.json
-            cimgui/generator/output/structs_and_enums.json
+            definitions.json
+            structs_and_enums.json
 
   create-release:
     needs: [build-windows, build-linux, build-macos, generate-definitions]
@@ -151,6 +156,11 @@ jobs:
         with:
           path: artifacts
 
+      - name: Debug artifact structure
+        run: |
+          echo "Artifact structure:"
+          find artifacts -type f
+
       - name: Prepare release files
         run: |
           mkdir release
@@ -159,8 +169,8 @@ jobs:
           cp artifacts/cimgui-win-ARM64/cimgui.dll release/cimgui.win-arm64.dll
           cp artifacts/cimgui-linux-x64/cimgui.so release/cimgui.so
           cp artifacts/cimgui-osx/cimgui.dylib release/cimgui.dylib
-          cp artifacts/definitions/cimgui/generator/output/definitions.json release/
-          cp artifacts/definitions/cimgui/generator/output/structs_and_enums.json release/
+          cp artifacts/definitions/definitions.json release/
+          cp artifacts/definitions/structs_and_enums.json release/
           ls -la release/
 
       - name: Create Release
